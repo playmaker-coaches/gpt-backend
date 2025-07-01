@@ -22,10 +22,10 @@ app.post("/chat", async (req, res) => {
       content: userMessage,
     });
 
-    // Запускаем ассистента без указания response_format или с "auto"
+    // Запускаем ассистента
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id,
-      response_format: "auto", // Можно также убрать эту строку
+      response_format: "auto", // Оставляем auto, чтобы мог приходить и текст, и картинка
     });
 
     // Ожидаем завершения ответа ассистента
@@ -39,11 +39,29 @@ app.post("/chat", async (req, res) => {
     // Получаем все сообщения в ветке
     const messages = await openai.beta.threads.messages.list(thread.id);
 
-    // Находим последний ответ ассистента
+    // Последний ответ ассистента
     const assistantMessage = messages.data.reverse().find((m) => m.role === "assistant");
-    const reply = assistantMessage?.content?.[0]?.text?.value || "Пустой ответ";
 
-    res.json({ reply });
+    if (!assistantMessage || !assistantMessage.content || assistantMessage.content.length === 0) {
+      return res.json({ reply: "Пустой ответ" });
+    }
+
+    // Проверяем, есть ли в ответе контент с типом 'image_url'
+    const imageContent = assistantMessage.content.find(c => c.type === "image_url");
+    if (imageContent) {
+      // Если есть картинка — возвращаем ссылку в поле image
+      return res.json({ image: imageContent.url });
+    }
+
+    // Иначе ищем текст
+    const textContent = assistantMessage.content.find(c => c.type === "text");
+    if (textContent && textContent.text) {
+      return res.json({ reply: textContent.text });
+    }
+
+    // Если ничего не нашли
+    res.json({ reply: "Пустой ответ" });
+
   } catch (error) {
     console.error(error);
     res.status(500).json({ reply: "Произошла ошибка на сервере." });
