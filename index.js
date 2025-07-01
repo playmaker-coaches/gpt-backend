@@ -13,23 +13,19 @@ app.post("/chat", async (req, res) => {
   const userMessage = req.body.message;
 
   try {
-    // Создаем новый тред (сессию)
     const thread = await openai.beta.threads.create();
 
-    // Отправляем сообщение пользователя
     await openai.beta.threads.messages.create(thread.id, {
       role: "user",
       content: [{ type: "text", text: userMessage }],
     });
 
-    // Запускаем ассистента с нужной моделью и без response_format json_object
+    // Убрали response_format
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id,
       model: "gpt-4.1",
-      // убираем response_format — по умолчанию auto
     });
 
-    // Ожидаем завершения ответа ассистента
     let status = "queued";
     while (status !== "completed" && status !== "failed") {
       await new Promise((r) => setTimeout(r, 1500));
@@ -37,10 +33,8 @@ app.post("/chat", async (req, res) => {
       status = runStatus.status;
     }
 
-    // Получаем все сообщения треда
     const messages = await openai.beta.threads.messages.list(thread.id);
 
-    // Находим последний ответ ассистента
     const assistantMessage = messages.data.reverse().find((m) => m.role === "assistant");
     const reply = assistantMessage?.content?.[0]?.text || "Пустой ответ";
 
