@@ -1,23 +1,33 @@
+const express = require("express");
+const cors = require("cors");
+const fetch = require("node-fetch"); // Убедись, что в package.json есть "node-fetch": "^2.6.7"
+const { OpenAI } = require("openai");
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const assistant_id = process.env.ASSISTANT_ID;
+
 app.post("/chat", async (req, res) => {
   const userMessage = req.body.message;
 
   try {
-    // 1. Создаем новую ветку диалога
+    // --- 1. Создаем ветку диалога и отправляем запрос ассистенту ---
     const thread = await openai.beta.threads.create();
 
-    // 2. Отправляем сообщение пользователя
     await openai.beta.threads.messages.create(thread.id, {
       role: "user",
       content: userMessage,
     });
 
-    // 3. Запускаем ассистента
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id,
       response_format: "auto",
     });
 
-    // 4. Ждем окончания ответа ассистента
+    // Ждем, пока ассистент ответит
     let status = "queued";
     while (status !== "completed" && status !== "failed") {
       await new Promise((r) => setTimeout(r, 1500));
@@ -25,30 +35,43 @@ app.post("/chat", async (req, res) => {
       status = runStatus.status;
     }
 
-    // 5. Получаем все сообщения ветки
+    // Получаем все сообщения и последний ответ ассистента
     const messages = await openai.beta.threads.messages.list(thread.id);
-
-    // 6. Ищем последний ответ ассистента с текстом
     const assistantMessage = messages.data.reverse().find((m) => m.role === "assistant");
     const replyText = assistantMessage?.content?.[0]?.text?.value || "Пустой ответ";
 
-    // 7. Дополнительно генерируем картинку через DALL·E по тому же промту
+    // --- 2. Генерируем картинку через DALL·E ---
     const imageResponse = await openai.images.generate({
       model: "dall-e-3",
-      prompt: userMessage, // Можно модифицировать промт по желанию
+      prompt: userMessage,
       size: "512x512",
       n: 1,
     });
 
     const imageUrl = imageResponse.data[0].url;
 
-    // 8. Отдаем клиенту и текст, и картинку
+    // --- 3. Скачиваем картинку по URL ---
+    const imageFetch = await fetch(imageUrl);
+    if (!imageFetch.ok) {
+      throw new Error("Ошибка при скачивании картинки");
+    }
+
+    const contentType = imageFetch.headers.get("content-type");
+    const imageBuffer = await imageFetch.buffer();
+
+    // --- 4. Отправляем JSON с текстом и картинкой base64 ---
     res.json({
       reply: replyText,
-      imageUrl,
+      imageBase64: imageBuffer.toString("base64"),
+      imageContentType: contentType,
     });
   } catch (error) {
     console.error(error);
     res.status(500).json({ reply: "Произошла ошибка на сервере." });
   }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`GPT backend запущен на http://localhost:${PORT}`);
 });
