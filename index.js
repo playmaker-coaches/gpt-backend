@@ -22,10 +22,10 @@ app.post("/chat", async (req, res) => {
       content: userMessage,
     });
 
-    // Запускаем ассистента с автоформатом ответа
+    // Запускаем ассистента без указания response_format или с "auto"
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id,
-      response_format: "auto",
+      response_format: "auto", // Можно также убрать эту строку
     });
 
     // Ожидаем завершения ответа ассистента
@@ -39,25 +39,11 @@ app.post("/chat", async (req, res) => {
     // Получаем все сообщения в ветке
     const messages = await openai.beta.threads.messages.list(thread.id);
 
-    // Ищем последний ответ ассистента
+    // Находим последний ответ ассистента
     const assistantMessage = messages.data.reverse().find((m) => m.role === "assistant");
-    if (!assistantMessage) {
-      return res.json({ reply: "Пустой ответ ассистента." });
-    }
+    const reply = assistantMessage?.content?.[0]?.text?.value || "Пустой ответ";
 
-    // Проверяем, есть ли изображение в ответе
-    // Обычно контент — массив объектов с type и value
-    // Ищем объект с type "image_url" или похожий
-    const imageContent = assistantMessage.content.find(c => c.type === "image_url" || c.type === "image");
-    if (imageContent && imageContent.value) {
-      return res.json({ image: imageContent.value });
-    }
-
-    // Иначе возвращаем текстовый ответ (предполагаем, что первый элемент с type text)
-    const textContent = assistantMessage.content.find(c => c.type === "text");
-    const replyText = textContent ? textContent.value : "Пустой текстовый ответ";
-
-    res.json({ reply: replyText });
+    res.json({ reply });
   } catch (error) {
     console.error(error);
     res.status(500).json({ reply: "Произошла ошибка на сервере." });
