@@ -62,7 +62,7 @@ app.post("/chat", async (req, res) => {
     // Отдаём клиенту текст и ID картинки (в данном случае — сам запрос)
     res.json({ reply: replyText, imageId: userMessage });
   } catch (e) {
-    console.error("Ошибка в /chat:", e);
+    console.error("Ошибка в /chat:", e);  // Лог ошибки в консоль
     res.status(500).json({ reply: "Ошибка на сервере." });
   }
 });
@@ -73,6 +73,7 @@ app.get("/image", async (req, res) => {
   const imageUrl = imageCache.get(id);
 
   if (!imageUrl) {
+    console.error(`Картинка не найдена для id: ${id}`);
     return res.status(404).send("Картинка не найдена");
   }
 
@@ -82,7 +83,7 @@ app.get("/image", async (req, res) => {
     res.set("Content-Type", contentType);
     response.body.pipe(res);
   } catch (e) {
-    console.error("Ошибка в /image:", e);
+    console.error("Ошибка в /image:", e); // Лог ошибки при отдаче картинки
     res.status(500).send("Ошибка при получении картинки");
   }
 });
