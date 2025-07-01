@@ -10,7 +10,10 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const assistant_id = process.env.ASSISTANT_ID;
 
 app.post("/chat", async (req, res) => {
-  const userMessage = req.body.message;
+  let userMessage = req.body.message;
+
+  // Добавляем слово "json" в сообщение, чтобы API принял response_format: "json_object"
+  userMessage += " Пожалуйста, ответь в формате json";
 
   try {
     const thread = await openai.beta.threads.create();
@@ -20,10 +23,9 @@ app.post("/chat", async (req, res) => {
       content: [{ type: "text", text: userMessage }],
     });
 
-    // Убрали response_format
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id,
-      model: "gpt-4.1",
+      response_format: "json_object",
     });
 
     let status = "queued";
@@ -36,7 +38,7 @@ app.post("/chat", async (req, res) => {
     const messages = await openai.beta.threads.messages.list(thread.id);
 
     const assistantMessage = messages.data.reverse().find((m) => m.role === "assistant");
-    const reply = assistantMessage?.content?.[0]?.text || "Пустой ответ";
+    const reply = assistantMessage?.content?.[0]?.text?.value || "Пустой ответ";
 
     res.json({ reply });
   } catch (error) {
