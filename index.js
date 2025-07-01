@@ -1,34 +1,23 @@
-const express = require("express");
-const cors = require("cors");
-const { OpenAI } = require("openai");
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const assistant_id = process.env.ASSISTANT_ID;
-
 app.post("/chat", async (req, res) => {
   const userMessage = req.body.message;
 
   try {
-    // Создаем новую ветку диалога
+    // 1. Создаем новую ветку диалога
     const thread = await openai.beta.threads.create();
 
-    // Отправляем сообщение пользователя
+    // 2. Отправляем сообщение пользователя
     await openai.beta.threads.messages.create(thread.id, {
       role: "user",
       content: userMessage,
     });
 
-    // Запускаем ассистента
+    // 3. Запускаем ассистента
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id,
-      response_format: "auto", // Оставляем auto, чтобы мог приходить и текст, и картинка
+      response_format: "auto",
     });
 
-    // Ожидаем завершения ответа ассистента
+    // 4. Ждем окончания ответа ассистента
     let status = "queued";
     while (status !== "completed" && status !== "failed") {
       await new Promise((r) => setTimeout(r, 1500));
@@ -36,39 +25,30 @@ app.post("/chat", async (req, res) => {
       status = runStatus.status;
     }
 
-    // Получаем все сообщения в ветке
+    // 5. Получаем все сообщения ветки
     const messages = await openai.beta.threads.messages.list(thread.id);
 
-    // Последний ответ ассистента
+    // 6. Ищем последний ответ ассистента с текстом
     const assistantMessage = messages.data.reverse().find((m) => m.role === "assistant");
+    const replyText = assistantMessage?.content?.[0]?.text?.value || "Пустой ответ";
 
-    if (!assistantMessage || !assistantMessage.content || assistantMessage.content.length === 0) {
-      return res.json({ reply: "Пустой ответ" });
-    }
+    // 7. Дополнительно генерируем картинку через DALL·E по тому же промту
+    const imageResponse = await openai.images.generate({
+      model: "dall-e-3",
+      prompt: userMessage, // Можно модифицировать промт по желанию
+      size: "512x512",
+      n: 1,
+    });
 
-    // Проверяем, есть ли в ответе контент с типом 'image_url'
-    const imageContent = assistantMessage.content.find(c => c.type === "image_url");
-    if (imageContent) {
-      // Если есть картинка — возвращаем ссылку в поле image
-      return res.json({ image: imageContent.url });
-    }
+    const imageUrl = imageResponse.data[0].url;
 
-    // Иначе ищем текст
-    const textContent = assistantMessage.content.find(c => c.type === "text");
-    if (textContent && textContent.text) {
-      return res.json({ reply: textContent.text });
-    }
-
-    // Если ничего не нашли
-    res.json({ reply: "Пустой ответ" });
-
+    // 8. Отдаем клиенту и текст, и картинку
+    res.json({
+      reply: replyText,
+      imageUrl,
+    });
   } catch (error) {
     console.error(error);
     res.status(500).json({ reply: "Произошла ошибка на сервере." });
   }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`GPT backend запущен на http://localhost:${PORT}`);
 });
