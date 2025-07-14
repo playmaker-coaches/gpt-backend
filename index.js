@@ -1,14 +1,3 @@
-const express = require("express");
-const cors = require("cors");
-const { OpenAI } = require("openai");
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const assistant_id = process.env.ASSISTANT_ID;
-
 app.post("/chat", async (req, res) => {
   const userMessage = req.body.message;
 
@@ -34,31 +23,25 @@ app.post("/chat", async (req, res) => {
 
     const messages = await openai.beta.threads.messages.list(thread.id);
     const assistantMessage = messages.data.reverse().find((m) => m.role === "assistant");
-    const textContent = assistantMessage?.content?.[0]?.text?.value || "";
+    const reply = assistantMessage?.content?.[0]?.text?.value || "Пустой ответ";
 
-    // Проверяем наличие изображения
-    if (textContent.includes("@image:")) {
-      const imagePrompt = textContent.split("@image:")[1].trim();
+    let imageUrl = null;
 
-      const imageResponse = await openai.images.generate({
+    // Если ассистент сказал, что "сейчас сделаю схему", вызываем генерацию изображения
+    if (/схем[ауы]|картинк[ауы]/i.test(userMessage)) {
+      const image = await openai.images.generate({
         model: "dall-e-3",
-        prompt: imagePrompt,
+        prompt: userMessage, // можно уточнить prompt
         n: 1,
         size: "1024x1024",
       });
 
-      const imageUrl = imageResponse.data[0].url;
-      return res.json({ reply: textContent.replace(`@image: ${imagePrompt}`, ""), image: imageUrl });
+      imageUrl = image.data[0].url;
     }
 
-    res.json({ reply: textContent });
+    res.json({ reply, imageUrl });
   } catch (error) {
     console.error(error);
     res.status(500).json({ reply: "Произошла ошибка на сервере." });
   }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`GPT backend запущен на http://localhost:${PORT}`);
 });
