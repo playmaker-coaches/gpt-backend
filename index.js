@@ -9,8 +9,9 @@ app.use(express.json());
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const assistant_id = process.env.ASSISTANT_ID;
 
-/* ————— helpers ————— */
+/* ===================== helpers ===================== */
 
+/** Достаём весь текст из сообщения ассистента */
 function extractAssistantText(message) {
   if (!message?.content) return "";
   try {
@@ -27,6 +28,7 @@ function extractAssistantText(message) {
   }
 }
 
+/** Все строки вида "@image: ..." — в массив промптов */
 function extractImagePrompts(text) {
   if (!text) return [];
   const lines = text.split(/\r?\n/);
@@ -38,6 +40,7 @@ function extractImagePrompts(text) {
   return prompts;
 }
 
+/** Убираем из видимого ответа служебные строки "@image:" */
 function stripImageDirectives(text) {
   return text
     .split(/\r?\n/)
@@ -46,35 +49,35 @@ function stripImageDirectives(text) {
     .trim();
 }
 
-/** Усиливаем запрос под тактическую диаграмму */
+/** Подкручиваем промпт под чистую баскетбольную схему (вид сверху) */
 function buildDiagramPrompt(userPrompt) {
   const prefix =
     "Top-down basketball tactical diagram, minimal and clean: court lines, hoop, zones. Players as numbered circles. Solid arrows = player movement. Dashed arrows = ball movement. Cones as small triangles, hoops as small circles. No people, no photos, no decorative text, white or light background. ";
   return `${prefix}${userPrompt}`;
 }
 
-/* ————— routes ————— */
+/* ===================== routes ===================== */
 
 app.post("/chat", async (req, res) => {
   const userMessage = req.body.message ?? "";
 
   try {
-    // 1) ветка
+    // 1) создаём ветку
     const thread = await openai.beta.threads.create();
 
-    // 2) сообщение пользователя
+    // 2) добавляем сообщение пользователя
     await openai.beta.threads.messages.create(thread.id, {
       role: "user",
       content: userMessage,
     });
 
-    // 3) запуск ассистента
+    // 3) запускаем ассистента
     const run = await openai.beta.threads.runs.create(thread.id, {
       assistant_id,
       response_format: "auto",
     });
 
-    // 4) ожидание
+    // 4) ждём завершения
     let status = "queued";
     while (!["completed", "failed", "cancelled", "expired"].includes(status)) {
       await new Promise((r) => setTimeout(r, 1200));
@@ -87,19 +90,22 @@ app.post("/chat", async (req, res) => {
         .json({ reply: "Ассистент не успел ответить. Повторите попытку.", imageUrls: [] });
     }
 
-    // 5) получаем ответ ассистента
+    // 5) забираем последнее сообщение ассистента
     const messages = await openai.beta.threads.messages.list(thread.id, { order: "desc", limit: 10 });
     const assistantMessage = messages.data.find((m) => m.role === "assistant");
     const rawReply = extractAssistantText(assistantMessage) || "Пустой ответ";
 
-    // 6) парсим @image:
+    // 6) вытаскиваем все @image: ...
     const imagePrompts = extractImagePrompts(rawReply);
+
+    // 7) чистим текст от служебных строк
     const replyClean = stripImageDirectives(rawReply);
 
-    // 7) генерируем изображения (гибридная логика)
+    // 8) генерим изображения (гибридная логика)
     const imageUrls = [];
     for (const p of imagePrompts) {
       try {
+        // если похоже на схему/диаграмму/дрилл — используем gpt-image-1, иначе dall-e-3
         const isDiagram = /схем|diagram|диаграмм|drill|play|exercise|комбинац/i.test(p);
         const modelName = isDiagram ? "gpt-image-1" : "dall-e-3";
         const promptToSend = isDiagram ? buildDiagramPrompt(p) : p;
@@ -117,11 +123,11 @@ app.post("/chat", async (req, res) => {
       }
     }
 
-    // 8) ответ клиенту
+    // 9) отдаём клиенту
     res.json({
       reply: replyClean,
       imageUrls,
-      imageUrl: imageUrls[0] || null, // для совместимости с фронтом
+      imageUrl: imageUrls[0] || null, // для совместимости со старым фронтом
     });
   } catch (error) {
     console.error(error);
