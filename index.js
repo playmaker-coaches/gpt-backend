@@ -6,112 +6,26 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const assistant_id = process.env.ASSISTANT_ID;
 
-/* ================= SYSTEM PROMPT ================= */
+/* ============ helpers ============ */
 
-const systemPrompt = `
-Ты — профессиональный тренер по детскому баскетболу и помощник тренеров.  
-
-
-Твоя задача — помогать:
-• планировать тренировки  
-• подбирать упражнения  
-• поддерживать мотивацию детей  
-• давать рекомендации по физической подготовке, питанию и восстановлению  
-• помогать с психологией и коммуникацией с родителями  
-
-Используй проверенные, практичные и современные методики детского и юношеского баскетбола.
-
-СТИЛЬ ОБЩЕНИЯ  
-• Дружелюбный, уверенный, профессиональный  
-• Коротко, по делу, без лишней теории  
-• Простыми словами, как тренер тренеру  
-• Можно поддерживать диалог, но не уходить в болтовню  
-• Если информации достаточно — сразу давай решение  
-• Если информации не хватает — задай только нужные вопросы  
-
-ПРИВЕТСТВИЕ  
-Используется ТОЛЬКО если это явно первое сообщение в диалоге.  
-Во всех остальных случаях — сразу переходи к сути.
-
-СТРУКТУРА ПЛАНА ТРЕНИРОВКИ  
-Всегда используй блоки и тайминг:
-
-ПОСТРОЕНИЕ (2–3 мин)  
-ПОДГОТОВИТЕЛЬНАЯ ЧАСТЬ (5–7 мин)  
-ОСНОВНАЯ ЧАСТЬ (~20 мин)  
-ИГРОВОЕ МОДЕЛИРОВАНИЕ (~15 мин)  
-ЗАКЛЮЧИТЕЛЬНАЯ ЧАСТЬ (~10 мин)  
-РЕФЛЕКСИЯ (2–3 мин)  
-
-ТРЕБОВАНИЯ К УПРАЖНЕНИЯМ  
-Для каждого упражнения обязательно указывай:
-• Название  
-• Описание  
-• Инвентарь  
-• Цель  
-• Типичные ошибки  
-• Коррекция  
-• Адаптация  
-
-ПОДБОР УПРАЖНЕНИЙ  
-Используй:
-• ведение  
-• передачи  
-• броски  
-• защиту  
-• координацию  
-• игровые формы (мини-игры, эстафеты, соревнования)
-
-УТОЧНЯЮЩИЕ ВОПРОСЫ  
-
-Если запрос — план тренировки, задай ВСЕ 6:
-• возраст  
-• уровень подготовки  
-• количество детей  
-• цель тренировки  
-• условия (зал/улица, кольца, инвентарь)  
-• длительность  
-
-Если тема другая — задавай только релевантные:
-• питание → возраст, нагрузка, цель  
-• психология → возраст, поведение, цель  
-• родители → цель сообщения  
-• восстановление → возраст, нагрузка, ограничения  
-
-СХЕМЫ УПРАЖНЕНИЙ  
-Схемы создавай ТОЛЬКО если пользователь явно попросил:
-«покажи схему», «нарисуй», «сделай визуал», «добавь схему»
-
-Если схемы не просили — НЕ добавляй @image.
-
-Если схема нужна — добавляй в конце упражнения строку:
-@image: схема упражнения "название", вид сверху, возраст, условия
-
-ПРАВИЛА СХЕМ  
-• Вид сверху, тактическая диаграмма  
-• Минималистично, без людей и фото  
-• Игроки — кружки с номерами  
-• Движение — сплошные стрелки  
-• Передачи — пунктир  
-• Конусы — треугольники  
-
-ДОПОЛНИТЕЛЬНЫЕ ЗАДАЧИ  
-• Коррекция техники и ошибок  
-• Мотивация и дисциплина  
-• Работа со стеснительными и активными детьми  
-• Советы по безопасности и профилактике травм  
-• Готовые формулировки сообщений для родителей  
-• Адаптация тренировок под нестандартные условия  
-
-ГЛАВНОЕ ПРАВИЛО  
-Твоя цель — помогать тренеру проводить сильные, понятные и живые тренировки, а не просто выдавать теорию.
-`;
-
-/* ================= HELPERS ================= */
+function extractAssistantText(message) {
+  if (!message?.content) return "";
+  try {
+    return message.content
+      .map((part) => {
+        if (part.type === "text" && part.text?.value) return part.text.value;
+        if (part.type === "input_text" && part.input_text) return part.input_text;
+        return "";
+      })
+      .join("\n")
+      .trim();
+  } catch {
+    return message?.content?.[0]?.text?.value || "";
+  }
+}
 
 function extractImagePrompts(text) {
   if (!text) return [];
@@ -133,65 +47,60 @@ function stripImageDirectives(text) {
 }
 
 function buildDiagramPrompt(userPrompt) {
-  const prefix = `
-Top-down basketball tactical diagram, minimal and clean.
-White or light background.
-Court lines, hoop, zones visible.
-Players as numbered circles (1, 2, 3).
-Solid arrows = player movement.
-Dashed arrows = ball movement.
-Cones as small triangles.
-Hoops as small circles.
-No people. No photos. No decorative text.
-`;
-  return `${prefix} ${userPrompt}`;
+  const prefix =
+    "Top-down basketball tactical diagram, minimal and clean: court lines, hoop, zones. Players as numbered circles. Solid arrows = player movement. Dashed arrows = ball movement. Cones as small triangles, hoops as small circles. No people, no photos, no decorative text, white or light background. ";
+  return `${prefix}${userPrompt}`;
 }
 
-/* ================= ROUTES ================= */
+/* ============ routes ============ */
 
 app.post("/chat", async (req, res) => {
   const userMessage = req.body.message ?? "";
 
   try {
-    const response = await openai.responses.create({
-      model: "gpt-4.1",
-      input: [
-        {
-          role: "system",
-          content: systemPrompt
-        },
-        {
-          role: "user",
-          content: userMessage
-        }
-      ]
+    const thread = await openai.beta.threads.create();
+
+    await openai.beta.threads.messages.create(thread.id, {
+      role: "user",
+      content: userMessage,
     });
 
-    // Вытаскиваем текст ответа
-    let rawReply = "";
-    const output = response.output?.[0]?.content || [];
+    const run = await openai.beta.threads.runs.create(thread.id, {
+      assistant_id,
+      response_format: "auto",
+    });
 
-    for (const part of output) {
-      if (part.type === "output_text" && part.text) {
-        rawReply += part.text;
-      }
+    let status = "queued";
+    while (!["completed", "failed", "cancelled", "expired"].includes(status)) {
+      await new Promise((r) => setTimeout(r, 1200));
+      const runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
+      status = runStatus.status;
+    }
+    if (status !== "completed") {
+      return res.status(500).json({
+        reply: "Ассистент не успел ответить. Повторите попытку.",
+        imageUrls: [],
+      });
     }
 
-    // 1. Ищем @image в ответе ассистента
+    const messages = await openai.beta.threads.messages.list(thread.id, { order: "desc", limit: 10 });
+    const assistantMessage = messages.data.find((m) => m.role === "assistant");
+    const rawReply = extractAssistantText(assistantMessage) || "";
+
+    // 1) Пытаемся вытащить @image: из ответа ассистента
     let imagePrompts = extractImagePrompts(rawReply);
 
-    // 2. Фолбэк — если пользователь сам прислал @image
+    // 2) Фолбэк: если ассистент не вставил @image:, но пользователь прислал — берём из userMessage
     if (imagePrompts.length === 0) {
-      const fallback = extractImagePrompts(userMessage);
-      if (fallback.length > 0) imagePrompts = fallback;
+      const fallbackPrompts = extractImagePrompts(userMessage);
+      if (fallbackPrompts.length > 0) imagePrompts = fallbackPrompts;
     }
 
-    // 3. Чистим текст от директив
+    // 3) Чистим текст; если он станет пустым, это ок — картинка пойдёт отдельно
     const replyClean = stripImageDirectives(rawReply);
 
-    // 4. Генерация схем
+    // 4) Генерация изображений (гибрид: схемы -> gpt-image-1, остальное -> dall-e-3)
     const imageUrls = [];
-
     for (const p of imagePrompts) {
       try {
         const isDiagram = /схем|diagram|диаграмм|drill|play|exercise|комбинац/i.test(p);
@@ -201,7 +110,7 @@ app.post("/chat", async (req, res) => {
         const img = await openai.images.generate({
           model: modelName,
           prompt: promptToSend,
-          size: "1024x1024"
+          size: "1024x1024",
         });
 
         const url = img?.data?.[0]?.url;
@@ -212,20 +121,15 @@ app.post("/chat", async (req, res) => {
     }
 
     res.json({
-      reply: replyClean,
-      imageUrls,
-      imageUrl: imageUrls[0] || null
+      reply: replyClean,              // может быть пустым — это нормально, если запрос был только на схему
+      imageUrls,                      // массив схем по порядку
+      imageUrl: imageUrls[0] || null, // первая схема для совместимости
     });
-  } catch (err) {
-    console.error("AI error:", err);
-    res.status(500).json({
-      reply: "Ошибка при обращении к AI",
-      imageUrls: []
-    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ reply: "Произошла ошибка на сервере.", imageUrls: [] });
   }
 });
-
-/* ================= SERVER ================= */
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
