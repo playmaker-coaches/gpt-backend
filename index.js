@@ -1,110 +1,233 @@
-import express from "express";
-import cors from "cors";
-import fetch from "node-fetch";
+const express = require("express");
+const cors = require("cors");
+const { OpenAI } = require("openai");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 10000;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
-// ====== НАСТРОЙКИ ======
-const OPENAI_CHAT_MODEL = "gpt-4.1-mini";
-const OPENAI_IMAGE_MODEL = "gpt-image-1";
+/* ================= SYSTEM PROMPT ================= */
 
-// ====== ПРОВЕРКА НА ЗАПРОС СХЕМЫ ======
-function detectSchemeRequest(text = "") {
-  return /схем|схему|схемы|diagram|draw|нарисуй|нарисовать|покажи|показать|рисунок|картинк/i.test(
-    text.toLowerCase()
-  );
+const systemPrompt = `
+Ты — профессиональный тренер по детскому баскетболу и помощник тренеров.  
+
+
+Твоя задача — помогать:
+• планировать тренировки  
+• подбирать упражнения  
+• поддерживать мотивацию детей  
+• давать рекомендации по физической подготовке, питанию и восстановлению  
+• помогать с психологией и коммуникацией с родителями  
+
+Используй проверенные, практичные и современные методики детского и юношеского баскетбола.
+
+СТИЛЬ ОБЩЕНИЯ  
+• Дружелюбный, уверенный, профессиональный  
+• Коротко, по делу, без лишней теории  
+• Простыми словами, как тренер тренеру  
+• Можно поддерживать диалог, но не уходить в болтовню  
+• Если информации достаточно — сразу давай решение  
+• Если информации не хватает — задай только нужные вопросы  
+
+ПРИВЕТСТВИЕ  
+Используется ТОЛЬКО если это явно первое сообщение в диалоге.  
+Во всех остальных случаях — сразу переходи к сути.
+
+СТРУКТУРА ПЛАНА ТРЕНИРОВКИ  
+Всегда используй блоки и тайминг:
+
+ПОСТРОЕНИЕ (2–3 мин)  
+ПОДГОТОВИТЕЛЬНАЯ ЧАСТЬ (5–7 мин)  
+ОСНОВНАЯ ЧАСТЬ (~20 мин)  
+ИГРОВОЕ МОДЕЛИРОВАНИЕ (~15 мин)  
+ЗАКЛЮЧИТЕЛЬНАЯ ЧАСТЬ (~10 мин)  
+РЕФЛЕКСИЯ (2–3 мин)  
+
+ТРЕБОВАНИЯ К УПРАЖНЕНИЯМ  
+Для каждого упражнения обязательно указывай:
+• Название  
+• Описание  
+• Инвентарь  
+• Цель  
+• Типичные ошибки  
+• Коррекция  
+• Адаптация  
+
+ПОДБОР УПРАЖНЕНИЙ  
+Используй:
+• ведение  
+• передачи  
+• броски  
+• защиту  
+• координацию  
+• игровые формы (мини-игры, эстафеты, соревнования)
+
+УТОЧНЯЮЩИЕ ВОПРОСЫ  
+
+Если запрос — план тренировки, задай ВСЕ 6:
+• возраст  
+• уровень подготовки  
+• количество детей  
+• цель тренировки  
+• условия (зал/улица, кольца, инвентарь)  
+• длительность  
+
+Если тема другая — задавай только релевантные:
+• питание → возраст, нагрузка, цель  
+• психология → возраст, поведение, цель  
+• родители → цель сообщения  
+• восстановление → возраст, нагрузка, ограничения  
+
+СХЕМЫ УПРАЖНЕНИЙ  
+Схемы создавай ТОЛЬКО если пользователь явно попросил:
+«покажи схему», «нарисуй», «сделай визуал», «добавь схему»
+
+Если схемы не просили — НЕ добавляй @image.
+
+Если схема нужна — добавляй в конце упражнения строку:
+@image: схема упражнения "название", вид сверху, возраст, условия
+
+ПРАВИЛА СХЕМ  
+• Вид сверху, тактическая диаграмма  
+• Минималистично, без людей и фото  
+• Игроки — кружки с номерами  
+• Движение — сплошные стрелки  
+• Передачи — пунктир  
+• Конусы — треугольники  
+
+ДОПОЛНИТЕЛЬНЫЕ ЗАДАЧИ  
+• Коррекция техники и ошибок  
+• Мотивация и дисциплина  
+• Работа со стеснительными и активными детьми  
+• Советы по безопасности и профилактике травм  
+• Готовые формулировки сообщений для родителей  
+• Адаптация тренировок под нестандартные условия  
+
+ГЛАВНОЕ ПРАВИЛО  
+Твоя цель — помогать тренеру проводить сильные, понятные и живые тренировки, а не просто выдавать теорию.
+`;
+
+/* ================= HELPERS ================= */
+
+function extractImagePrompts(text) {
+  if (!text) return [];
+  const lines = String(text).split(/\r?\n/);
+  const prompts = [];
+  for (const line of lines) {
+    const m = line.match(/^\s*@image\s*:\s*(.+?)\s*$/i);
+    if (m && m[1]) prompts.push(m[1].trim());
+  }
+  return prompts;
 }
 
-// ====== CHAT GPT ======
-async function generateText(prompt) {
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: OPENAI_CHAT_MODEL,
-      messages: [
+function stripImageDirectives(text) {
+  return String(text)
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*@image\s*:/i.test(line))
+    .join("\n")
+    .trim();
+}
+
+function buildDiagramPrompt(userPrompt) {
+  const prefix = `
+Top-down basketball tactical diagram, minimal and clean.
+White or light background.
+Court lines, hoop, zones visible.
+Players as numbered circles (1, 2, 3).
+Solid arrows = player movement.
+Dashed arrows = ball movement.
+Cones as small triangles.
+Hoops as small circles.
+No people. No photos. No decorative text.
+`;
+  return `${prefix} ${userPrompt}`;
+}
+
+/* ================= ROUTES ================= */
+
+app.post("/chat", async (req, res) => {
+  const userMessage = req.body.message ?? "";
+
+  try {
+    const response = await openai.responses.create({
+      model: "gpt-4.1",
+      input: [
         {
           role: "system",
-          content:
-            "Ты — профессиональный тренер по детскому баскетболу и помощник тренеров школы Playmaker. Ты даёшь чёткие, структурированные, практичные ответы. Схемы ты описываешь ТЕКСТОМ, но НЕ задаёшь вопросов «показать?» — если схема нужна, сервер сам её сгенерирует."
+          content: systemPrompt
         },
         {
           role: "user",
-          content: prompt
+          content: userMessage
         }
-      ],
-      temperature: 0.7
-    })
-  });
+      ]
+    });
 
-  const data = await response.json();
+    // Вытаскиваем текст ответа
+    let rawReply = "";
+    const output = response.output?.[0]?.content || [];
 
-  return data.choices?.[0]?.message?.content || "Ошибка генерации ответа";
-}
+    for (const part of output) {
+      if (part.type === "output_text" && part.text) {
+        rawReply += part.text;
+      }
+    }
 
-// ====== DALL·E / IMAGE ======
-async function generateImage(prompt) {
-  const response = await fetch("https://api.openai.com/v1/images/generations", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: OPENAI_IMAGE_MODEL,
-      prompt: `Минималистичная чёрно-белая схема для детской баскетбольной тренировки. Вид сверху. 
-Конусы — треугольники, игроки — кружки, движение — стрелки.
-Подписи на русском языке.
-Упражнение: ${prompt}
-Чистый фон, без художественных эффектов, стиль — спортивная тактическая схема.`,
-      size: "1024x1024"
-    })
-  });
+    // 1. Ищем @image в ответе ассистента
+    let imagePrompts = extractImagePrompts(rawReply);
 
-  const data = await response.json();
-  return data.data?.[0]?.url || null;
-}
+    // 2. Фолбэк — если пользователь сам прислал @image
+    if (imagePrompts.length === 0) {
+      const fallback = extractImagePrompts(userMessage);
+      if (fallback.length > 0) imagePrompts = fallback;
+    }
 
-// ====== API ======
-app.post("/chat", async (req, res) => {
-  try {
-    const userMessage = req.body.message || "";
-    const wantsScheme = detectSchemeRequest(userMessage);
+    // 3. Чистим текст от директив
+    const replyClean = stripImageDirectives(rawReply);
 
-    const replyText = await generateText(userMessage);
+    // 4. Генерация схем
+    const imageUrls = [];
 
-    let imageUrl = null;
-    let imageUrls = [];
+    for (const p of imagePrompts) {
+      try {
+        const isDiagram = /схем|diagram|диаграмм|drill|play|exercise|комбинац/i.test(p);
+        const modelName = isDiagram ? "gpt-image-1" : "dall-e-3";
+        const promptToSend = isDiagram ? buildDiagramPrompt(p) : p;
 
-    // ЕСЛИ ХОТЯ БЫ ПОХОЖЕ НА ЗАПРОС СХЕМЫ — ГЕНЕРИМ КАРТИНКУ
-    if (wantsScheme) {
-      imageUrl = await generateImage(userMessage);
-      if (imageUrl) imageUrls.push(imageUrl);
+        const img = await openai.images.generate({
+          model: modelName,
+          prompt: promptToSend,
+          size: "1024x1024"
+        });
+
+        const url = img?.data?.[0]?.url;
+        if (url) imageUrls.push(url);
+      } catch (e) {
+        console.error("Image generation error:", e?.message || e);
+      }
     }
 
     res.json({
-      reply: replyText,
-      imageUrl,
-      imageUrls
+      reply: replyClean,
+      imageUrls,
+      imageUrl: imageUrls[0] || null
     });
   } catch (err) {
-    console.error("Ошибка сервера:", err);
+    console.error("AI error:", err);
     res.status(500).json({
-      error: "Ошибка сервера",
-      details: err.message
+      reply: "Ошибка при обращении к AI",
+      imageUrls: []
     });
   }
 });
 
-// ====== START ======
+/* ================= SERVER ================= */
+
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`GPT backend запущен на http://localhost:${PORT}`);
 });
