@@ -6,26 +6,53 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const assistant_id = process.env.ASSISTANT_ID;
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
-/* ============ helpers ============ */
+/* ================= SYSTEM PROMPT ================= */
 
-function extractAssistantText(message) {
-  if (!message?.content) return "";
-  try {
-    return message.content
-      .map((part) => {
-        if (part.type === "text" && part.text?.value) return part.text.value;
-        if (part.type === "input_text" && part.input_text) return part.input_text;
-        return "";
-      })
-      .join("\n")
-      .trim();
-  } catch {
-    return message?.content?.[0]?.text?.value || "";
-  }
-}
+const systemPrompt = `
+Ты — профессиональный тренер по детскому баскетболу и помощник тренеров.
+Твоё имя — Майки.
+
+Твоя цель — быстро и практично помогать:
+• планировать тренировки
+• подбирать упражнения
+• поддерживать мотивацию детей
+• давать советы по восстановлению и питанию
+• помогать с коммуникацией с родителями
+
+ОСНОВНЫЕ ПРАВИЛА
+• Отвечай сразу по сути, без приветствий
+• Кратко, чётко, практично
+• Если данных достаточно — сразу давай решение
+• Если данных не хватает — задай только нужные вопросы
+
+СТРУКТУРА ПЛАНА ТРЕНИРОВКИ
+ПОСТРОЕНИЕ (2–3 мин)  
+ПОДГОТОВИТЕЛЬНАЯ ЧАСТЬ (5–7 мин)  
+ОСНОВНАЯ ЧАСТЬ (~20 мин)  
+ИГРОВОЕ МОДЕЛИРОВАНИЕ (~15 мин)  
+ЗАКЛЮЧИТЕЛЬНАЯ ЧАСТЬ (~10 мин)  
+РЕФЛЕКСИЯ (2–3 мин)  
+
+ТРЕБОВАНИЯ К УПРАЖНЕНИЯМ
+Для каждого упражнения указывай:
+Название, Описание, Инвентарь, Цель, Типичные ошибки, Коррекция, Адаптация
+
+СХЕМЫ
+Если упражнение связано с:
+• ведением
+• передачами
+• бросками
+• игровым взаимодействием
+
+Добавляй строку:
+@image: схема упражнения "название", вид сверху, возраст, условия
+`;
+
+/* ================= HELPERS ================= */
 
 function extractImagePrompts(text) {
   if (!text) return [];
@@ -47,60 +74,65 @@ function stripImageDirectives(text) {
 }
 
 function buildDiagramPrompt(userPrompt) {
-  const prefix =
-    "Top-down basketball tactical diagram, minimal and clean: court lines, hoop, zones. Players as numbered circles. Solid arrows = player movement. Dashed arrows = ball movement. Cones as small triangles, hoops as small circles. No people, no photos, no decorative text, white or light background. ";
-  return `${prefix}${userPrompt}`;
+  const prefix = `
+Top-down basketball tactical diagram, minimal and clean.
+White or light background.
+Court lines, hoop, zones visible.
+Players as numbered circles (1, 2, 3).
+Solid arrows = player movement.
+Dashed arrows = ball movement.
+Cones as small triangles.
+Hoops as small circles.
+No people. No photos. No decorative text.
+`;
+  return `${prefix} ${userPrompt}`;
 }
 
-/* ============ routes ============ */
+/* ================= ROUTES ================= */
 
 app.post("/chat", async (req, res) => {
   const userMessage = req.body.message ?? "";
 
   try {
-    const thread = await openai.beta.threads.create();
-
-    await openai.beta.threads.messages.create(thread.id, {
-      role: "user",
-      content: userMessage,
+    const response = await openai.responses.create({
+      model: "gpt-4.1",
+      input: [
+        {
+          role: "system",
+          content: systemPrompt
+        },
+        {
+          role: "user",
+          content: userMessage
+        }
+      ]
     });
 
-    const run = await openai.beta.threads.runs.create(thread.id, {
-      assistant_id,
-      response_format: "auto",
-    });
+    // Вытаскиваем текст ответа
+    let rawReply = "";
+    const output = response.output?.[0]?.content || [];
 
-    let status = "queued";
-    while (!["completed", "failed", "cancelled", "expired"].includes(status)) {
-      await new Promise((r) => setTimeout(r, 1200));
-      const runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
-      status = runStatus.status;
-    }
-    if (status !== "completed") {
-      return res.status(500).json({
-        reply: "Ассистент не успел ответить. Повторите попытку.",
-        imageUrls: [],
-      });
+    for (const part of output) {
+      if (part.type === "output_text" && part.text) {
+        rawReply += part.text;
+      }
     }
 
-    const messages = await openai.beta.threads.messages.list(thread.id, { order: "desc", limit: 10 });
-    const assistantMessage = messages.data.find((m) => m.role === "assistant");
-    const rawReply = extractAssistantText(assistantMessage) || "";
-
-    // 1) Пытаемся вытащить @image: из ответа ассистента
+    // 1. Ищем @image в ответе ассистента
     let imagePrompts = extractImagePrompts(rawReply);
 
-    // 2) Фолбэк: если ассистент не вставил @image:, но пользователь прислал — берём из userMessage
+    // 2. Фолбэк — если пользователь сам прислал @image
     if (imagePrompts.length === 0) {
-      const fallbackPrompts = extractImagePrompts(userMessage);
-      if (fallbackPrompts.length > 0) imagePrompts = fallbackPrompts;
+      const fallback = extractImagePrompts(userMessage);
+      if (fallback.length > 0) imagePrompts = fallback;
     }
 
-    // 3) Чистим текст; если он станет пустым, это ок — картинка пойдёт отдельно
+    // 3. Чистим текст от директив
     const replyClean = stripImageDirectives(rawReply);
 
-    // 4) Генерация изображений (гибрид: схемы -> gpt-image-1, остальное -> dall-e-3)
+    // 4. Генерация схем
     const imageUrls = [];
+
     for (const p of imagePrompts) {
       try {
         const isDiagram = /схем|diagram|диаграмм|drill|play|exercise|комбинац/i.test(p);
@@ -110,7 +142,7 @@ app.post("/chat", async (req, res) => {
         const img = await openai.images.generate({
           model: modelName,
           prompt: promptToSend,
-          size: "1024x1024",
+          size: "1024x1024"
         });
 
         const url = img?.data?.[0]?.url;
@@ -121,15 +153,20 @@ app.post("/chat", async (req, res) => {
     }
 
     res.json({
-      reply: replyClean,              // может быть пустым — это нормально, если запрос был только на схему
-      imageUrls,                      // массив схем по порядку
-      imageUrl: imageUrls[0] || null, // первая схема для совместимости
+      reply: replyClean,
+      imageUrls,
+      imageUrl: imageUrls[0] || null
     });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ reply: "Произошла ошибка на сервере.", imageUrls: [] });
+  } catch (err) {
+    console.error("AI error:", err);
+    res.status(500).json({
+      reply: "Ошибка при обращении к AI",
+      imageUrls: []
+    });
   }
 });
+
+/* ================= SERVER ================= */
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
